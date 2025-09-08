@@ -1,0 +1,76 @@
+stages:
+  - test # Run tests
+
+test-python:
+  stage: test
+  needs: []  # no dependencies to precious pipelines stages
+  tags:
+    - ito
+  image: python:3.12
+  script:
+    - pip install --no-cache-dir -r requirements-dev.txt
+    - poetry install --with dev --all-extras
+    - poetry run pytest --cov --cov-report term --cov-report xml:coverage.xml --junitxml=report.xml --log-cli-level=INFO
+  coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
+  artifacts:  # Collect test results
+    when: always
+    paths:
+      - report.xml
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+  rules:
+    - changes:
+        - rdp_mqtt/**/*
+        - tests/**/*
+        - poetry.lock
+        - pyproject.toml
+        - requirements-dev.txt
+        - docker/**/*
+    - when: manual
+
+build:format-lint:
+  stage: build
+  tags:
+    - ito
+  image: ${CI_DEPENDENCY_PROXY_DIRECT_GROUP_IMAGE_PREFIX}/python:3.13
+  script:
+    - pip install --no-cache-dir pre-commit
+    - pre-commit run poetry-check
+    - pre-commit run poetry-lock
+    - pre-commit run black --all-files --show-diff-on-failure
+    - pre-commit run ruff --all-files --show-diff-on-failure
+    # mypy in extra codequality step
+  rules:
+    - changes:
+        - rdp_mqtt/**/*
+        - poetry.lock
+        - pyproject.toml
+        - requirements-dev.txt
+        - docker/**/*
+    - when: manual
+
+build:codequality:
+  stage: build
+  tags:
+    - ito
+  image: ${CI_DEPENDENCY_PROXY_DIRECT_GROUP_IMAGE_PREFIX}/python:3.13
+  script:
+    - pip install -r requirements-dev.txt
+    - poetry install --with dev
+    - poetry run mypy . --no-error-summary > mypy-out.txt || true  # "|| true" is used for preventing job fail when mypy find errors
+    - poetry run mypy-gitlab-code-quality < mypy-out.txt > codequality.json
+  artifacts:
+    when: always
+    reports:
+      codequality: codequality.json
+  rules:
+    - changes:
+        - rdp_mqtt/**/*
+        - poetry.lock
+        - pyproject.toml
+        - requirements-dev.txt
+        - docker/**/*
+    - when: manual

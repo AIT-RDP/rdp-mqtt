@@ -1,0 +1,28 @@
+repos:
+  - repo: https://github.com/python-poetry/poetry
+    rev: 2.1.0
+    hooks:
+      - id: poetry-check
+      - id: poetry-lock
+      - id: poetry-install
+  - repo: https://github.com/psf/black
+    rev: 24.8.0
+    hooks:
+      - id: black
+        language_version: python3.13
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.4
+    hooks:
+      - id: ruff
+        name: "ruff linter"
+        args: [ "--fix" ]
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: poetry run mypy
+        language: system
+        types: [ python ]
+        require_serial: true
+        verbose: true
+        exclude: 'tests'

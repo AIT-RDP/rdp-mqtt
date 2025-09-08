@@ -1,0 +1,74 @@
+[project]
+name = "rdp_mqtt"
+version = "1.0.0"
+description = "MQTT client library"
+authors = [{ name = "Michael Gafert", email = "michael.gafert@ait.ac.at" }]
+readme = "README.md"
+packages = [{ include = "rdp_mqtt" }]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<4.0"
+paho-mqtt = "^2.1.0"
+pydantic = "^2.11.4"
+orjson = "^3.10.18"
+zstandard = "^0.23.0"
+attrs = "^24.2.0"
+protobuf = "^6.30.0"
+six = "^1.17.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0.0"
+pytest-asyncio = ">=0.21.0"
+pytest-timeout = ">=2.1.0"
+pytest-cov = "^5.0.0"
+mypy = "^1.11.2"
+types-protobuf = "^6.30.2.20250506"
+pre-commit = "^3.8.0"
+mypy-gitlab-code-quality = "^1.1.0"
+types-six = "^1.17.0.20250304"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.coverage.paths]
+source = ["rdp_mqtt"]
+
+[tool.coverage.run]
+branch = true
+source = ["rdp_mqtt"]
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.black]
+line-length = 120
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["rdp_mqtt/sparkplug/generated/sparkplug_b_pb2.py"]
+
+[tool.ruff.lint]
+select = [
+    "E", # pycodestyle
+    "F", # Pyflakes
+    "UP", # pyupgrade
+    "B", # flake8-bugbear
+    "SIM", # flake8-simplify
+    "I", # isort
+    "ASYNC", # flake8-async
+    "DTZ", # flake8-datetimez
+    "PD", # pandas-vet
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+log_cli = true
+log_cli_level = "DEBUG"
+log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
+log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+
+
+[tool.mypy]
+strict = true
+exclude = ["tests"]
