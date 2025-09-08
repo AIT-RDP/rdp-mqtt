@@ -37,6 +37,10 @@ source = ["rdp_mqtt"]
 [tool.coverage.run]
 branch = true
 source = ["rdp_mqtt"]
+omit = [
+    "rdp_mqtt/sparkplug/protobuf_to_dict.py",
+    "rdp_mqtt/sparkplug/generated/sparkplug_b_pb2.py"
+]
 
 [tool.coverage.report]
 show_missing = true
