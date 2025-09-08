@@ -31,8 +31,8 @@ test-python:
         - docker/**/*
     - when: manual
 
-build:format-lint:
-  stage: build
+test:format-lint:
+  stage: test
   tags:
     - ito
   image: ${CI_DEPENDENCY_PROXY_DIRECT_GROUP_IMAGE_PREFIX}/python:3.13
@@ -52,8 +52,8 @@ build:format-lint:
         - docker/**/*
     - when: manual
 
-build:codequality:
-  stage: build
+test:codequality:
+  stage: test
   tags:
     - ito
   image: ${CI_DEPENDENCY_PROXY_DIRECT_GROUP_IMAGE_PREFIX}/python:3.13
