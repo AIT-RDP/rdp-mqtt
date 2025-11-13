@@ -26,7 +26,7 @@ class MockSink:
         await self.write_queue.put(data)
 
 
-async def create_connected_mqtt_client(broker: str = "test.mosquitto.org", port: int = 1883) -> PahoMqttClient:
+async def create_connected_mqtt_client(broker: str = "broker.emqx.io", port: int = 1883) -> PahoMqttClient:
     """Create and connect a Paho MQTT client with proper connection handling and retries."""
 
     max_retries = 3
@@ -183,7 +183,7 @@ async def test_write_json_metric(mqtt_client_session: PahoMqttClient):
     mqtt_client_session.on_message = on_message
 
     settings = MqttSettings(
-        host="test.mosquitto.org",
+        host="broker.emqx.io",
         port=1883,
         ssl=False,
         topic=topic,
@@ -192,9 +192,6 @@ async def test_write_json_metric(mqtt_client_session: PahoMqttClient):
     )
     writer_device = MqttClient(settings=settings)
     await writer_device.setup()
-
-    # Wait for MQTT client to connect before attempting to write
-    await asyncio.sleep(2)  # Give time for connection
 
     try:
         await writer_device.publish(metric, topic=topic)
@@ -219,7 +216,7 @@ async def test_read_metric(mqtt_client_session: PahoMqttClient):
 
     # Subscriber setup
     reader_settings = MqttSettings(
-        host="test.mosquitto.org",
+        host="broker.emqx.io",
         port=1883,
         ssl=False,
         topic=unique_topic,
@@ -227,8 +224,6 @@ async def test_read_metric(mqtt_client_session: PahoMqttClient):
     )
     reader_device = MqttClient(settings=reader_settings)
     await reader_device.setup()
-
-    await asyncio.sleep(2)  # Give reader time to connect
 
     try:
         # Publish the metric
@@ -254,7 +249,7 @@ async def test_writer_subscriber_interaction():
 
     # Writer setup
     writer_settings = MqttSettings(
-        host="test.mosquitto.org",
+        host="broker.emqx.io",
         port=1883,
         ssl=False,
         subscribe=False,
@@ -265,7 +260,7 @@ async def test_writer_subscriber_interaction():
 
     # Subscriber setup
     subscriber_settings = MqttSettings(
-        host="test.mosquitto.org",
+        host="broker.emqx.io",
         port=1883,
         ssl=False,
         topic=unique_topic,
@@ -285,8 +280,6 @@ async def test_writer_subscriber_interaction():
                 await mock_sink.put(metric)
 
         subscriber_task = asyncio.create_task(subscribe_task())
-
-        await asyncio.sleep(2)  # Give subscriber time to connect
 
         await writer_device.publish(sent_metric, topic=unique_topic)
 
@@ -696,7 +689,7 @@ def create_sparkplug_writer_settings(**kwargs) -> tuple[MqttSettings, str, str, 
     unique_topic_base = f"spBv1.0/{group_id}"
 
     defaults = {
-        "host": "test.mosquitto.org",
+        "host": "broker.emqx.io",
         "port": 1883,
         "ssl": False,
         "identifier": f"sparkplug-writer-{uuid.uuid4()}",
@@ -713,7 +706,7 @@ def create_sparkplug_writer_settings(**kwargs) -> tuple[MqttSettings, str, str, 
 def create_sparkplug_subscriber_settings(topic: str, **kwargs) -> MqttSettings:
     """Create MqttSettings for a Sparkplug subscriber with common defaults."""
     defaults = {
-        "host": "test.mosquitto.org",
+        "host": "broker.emqx.io",
         "port": 1883,
         "ssl": False,
         "topic": topic,
@@ -993,7 +986,7 @@ async def test_json_e2e(complex_weather_message):
 
     # Setup writer with JSON parser
     writer_settings = MqttSettings(
-        host="test.mosquitto.org",
+        host="broker.emqx.io",
         port=1883,
         ssl=False,
         topic=topic,
@@ -1004,8 +997,6 @@ async def test_json_e2e(complex_weather_message):
     await writer_device.setup()
 
     try:
-        await asyncio.sleep(2)  # Give time for connections
-
         # Publish complex message
         await writer_device.publish(complex_weather_message, topic=topic)
 
@@ -1045,7 +1036,7 @@ async def test_json_zstd_e2e(complex_weather_message):
 
     # Setup writer with JSON ZSTD compression
     writer_settings = MqttSettings(
-        host="test.mosquitto.org",
+        host="broker.emqx.io",
         port=1883,
         ssl=False,
         identifier=f"writer-zstd-{uuid.uuid4()}",
@@ -1056,7 +1047,7 @@ async def test_json_zstd_e2e(complex_weather_message):
 
     # Setup subscriber with JSON ZSTD decompression
     subscriber_settings = MqttSettings(
-        host="test.mosquitto.org",
+        host="broker.emqx.io",
         port=1883,
         ssl=False,
         topic=topic,
@@ -1070,7 +1061,6 @@ async def test_json_zstd_e2e(complex_weather_message):
     try:
         await writer_device.setup()
         await subscriber_device.setup()
-        await asyncio.sleep(2)  # Give time for connections
 
         async def subscribe_task_func():
             async for metric in subscriber_device.subscribe():

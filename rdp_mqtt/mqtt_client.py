@@ -67,6 +67,8 @@ class MqttClient:
         self._sparkplug_node_birth_sent = False
         self._sparkplug_tasks: List[asyncio.Task[None]] = []
 
+        self._connection_event = asyncio.Event()
+
     async def setup(self) -> None:
         """Initialize the MQTT client"""
         # For json_zstd we need to compress the payload before sending it
@@ -112,6 +114,13 @@ class MqttClient:
         self._client.connect_async(self.settings.host, self.settings.port, keepalive=5)
         self._client.loop_start()
 
+        # Wait for client to be connected
+        await asyncio.wait(
+            [asyncio.create_task(self._connection_event.wait())],
+            timeout=10,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
         self.logger.info("MQTT client started")
 
     @staticmethod
@@ -120,6 +129,7 @@ class MqttClient:
     ) -> None:
         if rc == mqtt.MQTT_ERR_SUCCESS:
             userdata.logger.info("MQTT connected")
+            userdata._connection_event.set()
 
             if userdata.settings.subscribe:
                 options = SubscribeOptions(qos=userdata.settings.qos, noLocal=True)
