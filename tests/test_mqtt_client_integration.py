@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import datetime
 import logging
+import os
 import time
 import uuid
 from typing import AsyncGenerator
@@ -17,6 +18,10 @@ from rdp_mqtt.sparkplug.sparkplug_encode import encode_birth_message, encode_dat
 
 logger = logging.getLogger(__name__)
 
+# Local broker in CI (see .gitlab-ci.yml), public test broker otherwise
+TEST_BROKER = os.environ.get("MQTT_TEST_BROKER", "broker.emqx.io")
+TEST_PORT = int(os.environ.get("MQTT_TEST_PORT", "1883"))
+
 
 class MockSink:
     def __init__(self):
@@ -26,7 +31,7 @@ class MockSink:
         await self.write_queue.put(data)
 
 
-async def create_connected_mqtt_client(broker: str = "broker.emqx.io", port: int = 1883) -> PahoMqttClient:
+async def create_connected_mqtt_client(broker: str = TEST_BROKER, port: int = TEST_PORT) -> PahoMqttClient:
     """Create and connect a Paho MQTT client with proper connection handling and retries."""
 
     max_retries = 3
@@ -183,7 +188,7 @@ async def test_write_json_metric(mqtt_client_session: PahoMqttClient):
     mqtt_client_session.on_message = on_message
 
     settings = MqttSettings(
-        host="broker.emqx.io",
+        host=TEST_BROKER,
         port=1883,
         ssl=False,
         topic=topic,
@@ -216,7 +221,7 @@ async def test_read_metric(mqtt_client_session: PahoMqttClient):
 
     # Subscriber setup
     reader_settings = MqttSettings(
-        host="broker.emqx.io",
+        host=TEST_BROKER,
         port=1883,
         ssl=False,
         topic=unique_topic,
@@ -249,7 +254,7 @@ async def test_writer_subscriber_interaction():
 
     # Writer setup
     writer_settings = MqttSettings(
-        host="broker.emqx.io",
+        host=TEST_BROKER,
         port=1883,
         ssl=False,
         subscribe=False,
@@ -260,7 +265,7 @@ async def test_writer_subscriber_interaction():
 
     # Subscriber setup
     subscriber_settings = MqttSettings(
-        host="broker.emqx.io",
+        host=TEST_BROKER,
         port=1883,
         ssl=False,
         topic=unique_topic,
@@ -689,7 +694,7 @@ def create_sparkplug_writer_settings(**kwargs) -> tuple[MqttSettings, str, str, 
     unique_topic_base = f"spBv1.0/{group_id}"
 
     defaults = {
-        "host": "broker.emqx.io",
+        "host": TEST_BROKER,
         "port": 1883,
         "ssl": False,
         "identifier": f"sparkplug-writer-{uuid.uuid4()}",
@@ -706,7 +711,7 @@ def create_sparkplug_writer_settings(**kwargs) -> tuple[MqttSettings, str, str, 
 def create_sparkplug_subscriber_settings(topic: str, **kwargs) -> MqttSettings:
     """Create MqttSettings for a Sparkplug subscriber with common defaults."""
     defaults = {
-        "host": "broker.emqx.io",
+        "host": TEST_BROKER,
         "port": 1883,
         "ssl": False,
         "topic": topic,
@@ -986,7 +991,7 @@ async def test_json_e2e(complex_weather_message):
 
     # Setup writer with JSON parser
     writer_settings = MqttSettings(
-        host="broker.emqx.io",
+        host=TEST_BROKER,
         port=1883,
         ssl=False,
         topic=topic,
@@ -1036,7 +1041,7 @@ async def test_json_zstd_e2e(complex_weather_message):
 
     # Setup writer with JSON ZSTD compression
     writer_settings = MqttSettings(
-        host="broker.emqx.io",
+        host=TEST_BROKER,
         port=1883,
         ssl=False,
         identifier=f"writer-zstd-{uuid.uuid4()}",
@@ -1047,7 +1052,7 @@ async def test_json_zstd_e2e(complex_weather_message):
 
     # Setup subscriber with JSON ZSTD decompression
     subscriber_settings = MqttSettings(
-        host="broker.emqx.io",
+        host=TEST_BROKER,
         port=1883,
         ssl=False,
         topic=topic,

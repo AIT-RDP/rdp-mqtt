@@ -7,6 +7,16 @@ test-python:
   tags:
     - ito
   image: python:3.12
+  # Local MQTT broker for the integration tests, the public brokers are not reachable from
+  # every runner network. /mosquitto-no-auth.conf ships with the image and listens on
+  # 0.0.0.0:1883 with anonymous access enabled.
+  services:
+    - name: eclipse-mosquitto:2
+      alias: mqtt
+      command: ["mosquitto", "-c", "/mosquitto-no-auth.conf"]
+  variables:
+    MQTT_TEST_BROKER: mqtt
+    MQTT_TEST_PORT: "1883"
   script:
     - pip install --no-cache-dir -r requirements-dev.txt
     - poetry install --with dev --all-extras
