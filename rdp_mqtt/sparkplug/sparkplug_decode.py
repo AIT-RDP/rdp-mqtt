@@ -1,4 +1,5 @@
 import datetime
+import functools
 import re
 import xml.etree.ElementTree as XML
 from typing import Any, Dict, List, Optional
@@ -39,6 +40,65 @@ def decode_message(container: Message) -> list[dict[str, Any]]:
     return metrics
 
 
+_FAST_METRIC_FIELDS = frozenset(
+    {
+        "name",
+        "alias",
+        "timestamp",
+        "datatype",
+        "is_historical",
+        "is_transient",
+        "is_null",
+        "int_value",
+        "long_value",
+        "float_value",
+        "double_value",
+        "boolean_value",
+        "string_value",
+        "bytes_value",
+    }
+)
+
+
+def _metric_to_dict_fast(metric: Message) -> Optional[dict[str, Any]]:
+    """
+    Direct conversion of the common data metrics (scalar values and DataSets), with the same
+    output as protobuf_to_dict: only set fields appear, a DataSetValue contributes its set oneof
+    member. protobuf_to_dict walks the descriptors and builds converter lambdas per field on
+    every call, which dominates the decode cost at high message rates. Returns None for metrics
+    carrying metadata, properties, templates or extensions - those take the generic path.
+    """
+    out: dict[str, Any] = {}
+    for field, value in metric.ListFields():
+        name = field.name
+        if name in _FAST_METRIC_FIELDS:
+            out[name] = value
+        elif name == "dataset_value":
+            ds: dict[str, Any] = {}
+            for ds_field, ds_value in value.ListFields():
+                if ds_field.name == "columns":
+                    ds["columns"] = list(ds_value)
+                elif ds_field.name == "types":
+                    ds["types"] = list(ds_value)
+                elif ds_field.name == "rows":
+                    rows = []
+                    for row in ds_value:
+                        elements = []
+                        for element in row.elements:
+                            which = element.WhichOneof("value")
+                            if which == "extension_value":
+                                return None
+                            elements.append({which: getattr(element, which)} if which else {})
+                        rows.append({"elements": elements} if elements else {})
+                    ds["rows"] = rows
+                else:  # num_of_columns
+                    ds[ds_field.name] = ds_value
+            out[name] = ds
+        else:  # metadata, properties, template_value, extension_value
+            return None
+    return out
+
+
 def decode_message_element(metric: Message) -> dict[str, Any]:
     """
     Parses the metric object to extract its details based on its datatype.
@@ -49,7 +109,9 @@ def decode_message_element(metric: Message) -> dict[str, Any]:
     Returns:
         A dictionary containing the metric's name, alias, type, and value.
     """
-    parsed_metric = protobuf_to_dict(metric)
+    parsed_metric = _metric_to_dict_fast(metric)
+    if parsed_metric is None:
+        parsed_metric = protobuf_to_dict(metric)
 
     # Parse the value based on the datatype
     if metric.datatype in {  # type: ignore
@@ -136,10 +198,13 @@ def remove_prefix(name: str, device_id: str) -> str:
     Returns:
         str: The string without the prefix.
     """
-    # Use regex to match the prefix pattern
-    pattern = f"^{re.escape(device_id)}(?:_\\d+)?_?"
-    # Remove the matched prefix from the string
-    return re.sub(pattern, "", name, count=1)
+    # Use regex to match the prefix pattern; compiled once per device_id, this runs per sample
+    return _prefix_pattern(device_id).sub("", name, count=1)
+
+
+@functools.lru_cache(maxsize=128)
+def _prefix_pattern(device_id: str) -> re.Pattern[str]:
+    return re.compile(f"^{re.escape(device_id)}(?:_\\d+)?_?")
 
 
 def decode_data_message(
