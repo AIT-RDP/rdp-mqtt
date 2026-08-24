@@ -123,6 +123,15 @@ class MqttClient:
 
         self.logger.info("MQTT client started")
 
+    def subscription_topics(self) -> List[str]:
+        """The configured topic(s) as a list."""
+        topic = self.settings.topic
+        return topic if isinstance(topic, list) else [topic]
+
+    def _default_publish_topic(self) -> str:
+        """Default target for publishes without an explicit topic: the first configured one."""
+        return self.subscription_topics()[0]
+
     @staticmethod
     def _on_connect(
         client: mqtt.Client, userdata: "MqttClient", flags: Any, rc: int, properties: Any | None = None
@@ -133,8 +142,9 @@ class MqttClient:
 
             if userdata.settings.subscribe:
                 options = SubscribeOptions(qos=userdata.settings.qos, noLocal=True)
-                client.subscribe(userdata.settings.topic, options=options)
-                userdata.logger.info("Subscribed to %s", userdata.settings.topic)
+                for topic in userdata.subscription_topics():
+                    client.subscribe(topic, options=options)
+                    userdata.logger.info("Subscribed to %s", topic)
 
             # Send NBIRTH for Sparkplug
             if userdata.settings.payload_parser == "sparkplug" and not userdata._sparkplug_node_birth_sent:
@@ -191,6 +201,11 @@ class MqttClient:
         if not metrics:
             return
 
+        if self.settings.include_topic:
+            # Reserved key: consumers pop it to know which topic the metric came from
+            for metric in metrics:
+                metric["_topic"] = message.topic
+
         # Push into the asyncio queue from the paho thread
         for metric in metrics:
             try:
@@ -198,7 +213,8 @@ class MqttClient:
                     # If the loop is running, use call_soon_threadsafe to push the metric into the asyncio queue
                     self._loop.call_soon_threadsafe(self._incoming.put_nowait, metric)
                 else:
-                    raise ValueError
+                    # No loop yet: take the fallback path below
+                    raise RuntimeError
             except RuntimeError:
                 # Fall back to immediate put (rare race during startup)
                 self._incoming.put_nowait(metric)
@@ -278,7 +294,7 @@ class MqttClient:
 
     async def publish(self, metric: Dict[str, Any], topic: Optional[str] = None) -> None:
         """Publish a metric to MQTT"""
-        publish_topic = topic or self.settings.topic
+        publish_topic = topic or self._default_publish_topic()
 
         if self.settings.batch_size > 0:
             async with self._batch_lock:
@@ -372,8 +388,7 @@ class MqttClient:
         """Shutdown the MQTT client"""
         # Flush any pending batches
         if self.settings.batch_size > 0 and self._pending_metrics:
-            topic = self.settings.topic
-            await self._flush_batch(topic)
+            await self._flush_batch(self._default_publish_topic())
 
         # Cancel the batch timer if running
         if self._batch_task and not self._batch_task.done():

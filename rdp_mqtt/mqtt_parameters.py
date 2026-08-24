@@ -1,5 +1,5 @@
 import uuid
-from typing import Literal, Optional
+from typing import List, Literal, Optional, Union
 
 import pydantic
 from pydantic import SecretStr
@@ -38,9 +38,16 @@ class MqttConnectionParameters(pydantic.BaseModel):
         default_factory=lambda: "RDP_" + str(uuid.uuid4()),
     )
 
-    topic: str = pydantic.Field(
-        description="The topic to subscribe to (supports wildcards like + and #)",
+    topic: Union[str, List[str]] = pydantic.Field(
+        description="The topic (or list of topics) to subscribe to (supports wildcards like + "
+        "and #). For publishing without an explicit topic the first entry is used.",
         default="#",
+    )
+
+    include_topic: bool = pydantic.Field(
+        description="Attach the per-message topic to each metric yielded by subscribe() under "
+        "the reserved key '_topic'. Off by default so existing consumers see no new key.",
+        default=False,
     )
 
     validate_certificate: bool = pydantic.Field(

@@ -479,6 +479,39 @@ class TestMqttCallbacks:
         # Should not subscribe on failure
         mock_paho_client.subscribe.assert_not_called()
 
+    def test_on_connect_subscribes_to_each_topic_of_a_list(self):
+        settings = MqttSettings(ssl=False, topic=["a/1", "b/#"])
+        client = MqttClient(settings)
+
+        mock_paho_client = MagicMock()
+        MqttClient._on_connect(mock_paho_client, client, {}, 0, None)
+
+        subscribed = [call.args[0] for call in mock_paho_client.subscribe.call_args_list]
+        assert subscribed == ["a/1", "b/#"]
+
+    def test_on_message_include_topic_stamps_the_reserved_key(self):
+        settings = MqttSettings(ssl=False, payload_parser="json", include_topic=True)
+        client = MqttClient(settings)
+
+        message = MagicMock()
+        message.topic = "tq/meter/batt"
+        message.payload = orjson.dumps({"value": 1})
+        MqttClient._on_message(MagicMock(), client, message)
+
+        metric = client._incoming.get_nowait()
+        assert metric == {"value": 1, "_topic": "tq/meter/batt"}
+
+    def test_on_message_without_include_topic_leaves_the_payload_unchanged(self):
+        settings = MqttSettings(ssl=False, payload_parser="json")
+        client = MqttClient(settings)
+
+        message = MagicMock()
+        message.topic = "tq/meter/batt"
+        message.payload = orjson.dumps({"value": 1})
+        MqttClient._on_message(MagicMock(), client, message)
+
+        assert client._incoming.get_nowait() == {"value": 1}
+
     def test_on_disconnect_callback(self):
         """Test disconnection callback"""
         settings = MqttSettings(ssl=False)
