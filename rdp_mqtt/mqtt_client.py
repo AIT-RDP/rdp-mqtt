@@ -6,6 +6,7 @@ including JSON, compressed JSON with ZSTD, and Sparkplug B protocol.
 import asyncio
 import functools
 import logging
+import sqlite3
 import ssl
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional
@@ -69,6 +70,11 @@ class MqttClient:
 
         self._connection_event = asyncio.Event()
 
+        # Retransmit buffer (spool_path), see _spool_put / _drain_spool
+        self._spool: sqlite3.Connection | None = None
+        self._drain_task: asyncio.Task[None] | None = None
+        self._spooled = 0
+
     async def setup(self) -> None:
         """Initialize the MQTT client"""
         # For json_zstd we need to compress the payload before sending it
@@ -110,6 +116,16 @@ class MqttClient:
         self._sparkplug_alias_map = {}
         self._sparkplug_node_birth_sent = False
 
+        # Open the spool before connecting so the first on_connect already replays a previous run
+        if self.settings.spool_path:
+            self._spool = sqlite3.connect(self.settings.spool_path)
+            self._spool.execute("PRAGMA journal_mode=WAL")
+            self._spool.execute("PRAGMA synchronous=NORMAL")
+            self._spool.execute(
+                "CREATE TABLE IF NOT EXISTS spool (id INTEGER PRIMARY KEY, topic TEXT NOT NULL, payload BLOB NOT NULL)"
+            )
+            self._spool.commit()
+
         # Start the separate event loop
         self._client.connect_async(self.settings.host, self.settings.port, keepalive=5)
         self._client.loop_start()
@@ -145,6 +161,9 @@ class MqttClient:
                 for topic in userdata.subscription_topics():
                     client.subscribe(topic, options=options)
                     userdata.logger.info("Subscribed to %s", topic)
+
+            if userdata._spool is not None and userdata._loop:
+                userdata._loop.call_soon_threadsafe(userdata._start_drain)
 
             # Send NBIRTH for Sparkplug
             if userdata.settings.payload_parser == "sparkplug" and not userdata._sparkplug_node_birth_sent:
@@ -267,12 +286,82 @@ class MqttClient:
         else:
             raise ValueError(f"Unknown payload parser for batch write '{self.settings.payload_parser}'")
 
-        if self._client:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, functools.partial(self._client.publish, topic, payload, 0, False))
-            self.logger.debug("Published batch of %d metrics to %s", len(metrics), topic)
-        else:
+        if not self._client:
             raise ConnectionError("MQTT client not connected, cannot publish batch")
+
+        if self._spool is not None and not self._client.is_connected():
+            self._spool_put(topic, payload)
+            return
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, functools.partial(self._client.publish, topic, payload, self.settings.qos, False)
+        )
+        self.logger.debug("Published batch of %d metrics to %s", len(metrics), topic)
+
+    def _spool_put(self, topic: str, payload: bytes) -> None:
+        """Buffer one outgoing message on disk until the broker is reachable again."""
+        assert self._spool is not None
+        if self._spooled == 0:
+            self.logger.warning("MQTT not connected, buffering messages in %s", self.settings.spool_path)
+        self._spooled += 1
+
+        self._spool.execute("INSERT INTO spool (topic, payload) VALUES (?, ?)", (topic, payload))
+
+        # Pages on the freelist are reused by later inserts, so they do not count as occupied
+        page_size = self._spool.execute("PRAGMA page_size").fetchone()[0]
+        page_count = self._spool.execute("PRAGMA page_count").fetchone()[0]
+        freelist = self._spool.execute("PRAGMA freelist_count").fetchone()[0]
+        if (page_count - freelist) * page_size > self.settings.spool_max_mb * 2**20:
+            # Ids are dense, so the oldest tenth of the id range is about the oldest tenth of the rows.
+            # min/max of the primary key are O(1), a count(*) would scan the table on every overflow.
+            low, high = self._spool.execute("SELECT min(id), max(id) FROM spool").fetchone()
+            cutoff = low + (high - low) // 10
+            self._spool.execute("DELETE FROM spool WHERE id <= ?", (cutoff,))
+            self.logger.warning("MQTT spool exceeds %d MiB, dropped the oldest messages", self.settings.spool_max_mb)
+        self._spool.commit()
+
+    def _start_drain(self) -> None:
+        if self._drain_task is None or self._drain_task.done():
+            self._drain_task = asyncio.create_task(self._drain_spool())
+
+    async def _drain_spool(self) -> None:
+        """
+        Replay the spooled messages oldest first, deleting each chunk once the broker acknowledged it.
+
+        Delivery is at-least-once: if the connection drops while a chunk is in flight the rows stay in
+        the spool and are published again on the next connect, even if paho delivered some of them.
+        """
+        assert self._spool is not None and self._client is not None
+        loop = asyncio.get_running_loop()
+        replayed = 0
+
+        while True:
+            rows = self._spool.execute("SELECT id, topic, payload FROM spool ORDER BY id LIMIT 50").fetchall()
+            if not rows:
+                break
+
+            infos = [self._client.publish(topic, payload, self.settings.qos, False) for _, topic, payload in rows]
+            try:
+                for info in infos:
+                    await loop.run_in_executor(None, info.wait_for_publish, 10)
+                acked = all(info.is_published() for info in infos)
+            except (RuntimeError, ValueError):  # paho: not connected / outgoing queue full
+                acked = False
+
+            if not acked:
+                self.logger.warning(
+                    "MQTT spool replay stalled after %d messages, resuming on the next connect", replayed
+                )
+                return
+
+            self._spool.execute("DELETE FROM spool WHERE id <= ?", (rows[-1][0],))
+            self._spool.commit()
+            replayed += len(rows)
+
+        if replayed:
+            self.logger.info("Replayed %d spooled MQTT messages", replayed)
+        self._spooled = 0
 
     async def _flush_batch(self, topic: str) -> None:
         """Flush pending metrics batch."""
@@ -345,7 +434,7 @@ class MqttClient:
             if self._client:
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(
-                    None, functools.partial(self._client.publish, birth_topic, birth_payload, 0, False)
+                    None, functools.partial(self._client.publish, birth_topic, birth_payload, self.settings.qos, False)
                 )
                 self._sparkplug_node_birth_sent = True
                 self.logger.info(f"Sent Sparkplug NBIRTH for node {self.settings.sparkplug_node_id} at {birth_topic}")
@@ -377,7 +466,7 @@ class MqttClient:
 
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
-                None, functools.partial(self._client.publish, birth_topic, birth_payload, 0, False)
+                None, functools.partial(self._client.publish, birth_topic, birth_payload, self.settings.qos, False)
             )
             self.logger.info(f"Sent Sparkplug DBIRTH for new fields at {birth_topic}")
 
@@ -400,9 +489,16 @@ class MqttClient:
                 task.cancel()
         self._sparkplug_tasks.clear()
 
+        if self._drain_task and not self._drain_task.done():
+            self._drain_task.cancel()
+
         # Disconnect MQTT client
         if self._client:
             self._client.loop_stop()
             self._client.disconnect()
+
+        if self._spool is not None:
+            self._spool.close()
+            self._spool = None
 
         self.logger.info("MQTT client shut down gracefully")

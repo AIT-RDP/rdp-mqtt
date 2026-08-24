@@ -56,10 +56,24 @@ class MqttConnectionParameters(pydantic.BaseModel):
     )
 
     qos: int = pydantic.Field(
-        description="QOS level (0, 1, or 2)",
-        default=0,
+        description="QOS level (0, 1, or 2) for subscribing and publishing. With 1 or 2 paho keeps unsent "
+        "messages in memory across a connection loss and resends them on reconnect, with 0 they are dropped.",
+        default=1,
         ge=0,
         le=2,
+    )
+
+    spool_path: Optional[str] = pydantic.Field(
+        description="Path of a SQLite file that buffers outgoing messages while the broker is unreachable. "
+        "They are replayed in order on reconnect and survive a restart. Off by default: without it a "
+        "message published while disconnected only lives in memory (qos 1 or 2) or is dropped (qos 0).",
+        default=None,
+    )
+
+    spool_max_mb: int = pydantic.Field(
+        description="Size cap of the spool file in MiB. Beyond it the oldest buffered messages are dropped.",
+        default=1024,
+        ge=1,
     )
 
     subscribe: bool = pydantic.Field(

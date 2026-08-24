@@ -466,7 +466,8 @@ class TestReadmeExamples:
         assert default_settings.ssl is True
         assert default_settings.payload_parser == "json"
         assert default_settings.batch_size == 0
-        assert default_settings.qos == 0
+        assert default_settings.qos == 1
+        assert default_settings.spool_path is None
 
         # Test custom settings example from README
         custom_settings = MqttSettings(

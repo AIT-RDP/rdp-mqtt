@@ -28,7 +28,8 @@ class TestMqttSettings:
         assert settings.ssl is True
         assert settings.payload_parser == "json"
         assert settings.batch_size == 0
-        assert settings.qos == 0
+        assert settings.qos == 1
+        assert settings.spool_path is None
 
     def test_mqtt_settings_custom_values(self):
         """Test custom MQTT settings"""
@@ -524,6 +525,109 @@ class TestMqttCallbacks:
 
         # Should attempt reconnection
         mock_paho_client.reconnect.assert_called_once()
+
+
+class TestMqttSpool:
+    """Retransmit buffer: outgoing messages are kept in a SQLite file while disconnected."""
+
+    @staticmethod
+    async def _client_with_mock_paho(connected: bool, **settings):
+        client = MqttClient(MqttSettings(ssl=False, subscribe=False, **settings))
+        paho = MagicMock()
+        paho.is_connected.return_value = connected
+        paho.publish.return_value = MagicMock(rc=0, is_published=MagicMock(return_value=True))
+        with patch("rdp_mqtt.mqtt_client.mqtt.Client", return_value=paho):
+            client._connection_event.set()  # do not wait out the 10s connect timeout
+            await client.setup()
+        return client, paho
+
+    @staticmethod
+    def _spool_count(client):
+        return client._spool.execute("SELECT count(*) FROM spool").fetchone()[0]
+
+    @pytest.mark.asyncio
+    async def test_publish_uses_the_configured_qos(self):
+        client, paho = await self._client_with_mock_paho(connected=True, qos=2)
+        with patch("asyncio.get_running_loop") as mock_get_loop:
+            mock_get_loop.return_value.run_in_executor = lambda executor, func: asyncio.sleep(0, func())
+            await client.publish({"v": 1}, "t/1")
+        assert paho.publish.call_args.args == ("t/1", b'{"v":1}', 2, False)
+
+    @pytest.mark.asyncio
+    async def test_spool_is_off_by_default(self, tmp_path):
+        client, paho = await self._client_with_mock_paho(connected=False)
+        assert client._spool is None
+        assert list(tmp_path.iterdir()) == []
+
+    @pytest.mark.asyncio
+    async def test_spool_buffers_while_disconnected_and_replays_on_connect(self, tmp_path):
+        client, paho = await self._client_with_mock_paho(connected=False, spool_path=str(tmp_path / "spool.db"))
+
+        await client.publish({"v": 1}, "t/1")
+        await client.publish({"v": 2}, "t/2")
+        paho.publish.assert_not_called()
+        assert self._spool_count(client) == 2
+
+        paho.is_connected.return_value = True
+        MqttClient._on_connect(paho, client, {}, 0, None)
+        await asyncio.sleep(0.05)
+        await client._drain_task
+
+        assert [c.args for c in paho.publish.call_args_list] == [
+            ("t/1", b'{"v":1}', 1, False),
+            ("t/2", b'{"v":2}', 1, False),
+        ]
+        assert self._spool_count(client) == 0
+
+        # Connected again: publishes go straight out, nothing is spooled
+        await client.publish({"v": 3}, "t/3")
+        assert paho.publish.call_count == 3
+        assert self._spool_count(client) == 0
+        await client.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_spool_survives_a_restart(self, tmp_path):
+        path = str(tmp_path / "spool.db")
+        first, _ = await self._client_with_mock_paho(connected=False, spool_path=path)
+        await first.publish({"v": 1}, "t/1")
+        await first.shutdown()
+
+        second, paho = await self._client_with_mock_paho(connected=True, spool_path=path)
+        MqttClient._on_connect(paho, second, {}, 0, None)
+        await asyncio.sleep(0.05)
+        await second._drain_task
+
+        assert paho.publish.call_args.args == ("t/1", b'{"v":1}', 1, False)
+        assert self._spool_count(second) == 0
+        await second.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_spool_replay_stops_when_the_broker_does_not_ack(self, tmp_path):
+        client, paho = await self._client_with_mock_paho(connected=False, spool_path=str(tmp_path / "spool.db"))
+        await client.publish({"v": 1}, "t/1")
+
+        paho.publish.return_value.is_published.return_value = False
+        MqttClient._on_connect(paho, client, {}, 0, None)
+        await asyncio.sleep(0.05)
+        await client._drain_task
+
+        assert self._spool_count(client) == 1, "an unacknowledged message stays in the spool"
+        await client.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_spool_drops_the_oldest_messages_beyond_the_size_cap(self, tmp_path):
+        client, _ = await self._client_with_mock_paho(
+            connected=False, spool_path=str(tmp_path / "spool.db"), spool_max_mb=1
+        )
+        for i in range(3000):  # ~1 KB each, ~3 MiB in total against a 1 MiB cap
+            await client.publish({"i": i, "pad": "x" * 1000}, "t")
+
+        count = self._spool_count(client)
+        assert 0 < count < 3000
+        oldest = client._spool.execute("SELECT min(id) FROM spool").fetchone()[0]
+        assert oldest > 1, "the oldest rows were dropped, the newest kept"
+        assert (tmp_path / "spool.db").stat().st_size < 1.5 * 2**20
+        await client.shutdown()
 
 
 # Test fixtures and utilities

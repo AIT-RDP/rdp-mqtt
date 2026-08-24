@@ -88,8 +88,10 @@ The `MqttSettings` class combines multiple parameter groups:
 - **`validate_certificate`**: `bool` - Validate SSL certificate (default: `True`)
 - **`identifier`**: `str` - MQTT client ID (default: `"RDP_" + uuid`)
 - **`topic`**: `str` - Topic to subscribe to, supports wildcards (default: `"#"`)
-- **`qos`**: `int` - QoS level 0-2 (default: `0`)
+- **`qos`**: `int` - QoS level 0-2 for subscribing and publishing (default: `1`)
 - **`subscribe`**: `bool` - Whether to subscribe to topic (default: `True`)
+- **`spool_path`**: `Optional[str]` - SQLite file that buffers outgoing messages while disconnected, see [Retransmit buffer](#retransmit-buffer) (default: `None` = off)
+- **`spool_max_mb`**: `int` - Size cap of the spool file in MiB, oldest messages are dropped beyond it (default: `1024`)
 
 #### Payload Parameters
 
@@ -240,6 +242,28 @@ await client.publish({"sensor": "temp2", "value": 24.1})
 await client.publish({"sensor": "temp3", "value": 22.8})
 # ... batched and sent together when size/timeout reached
 ```
+
+## Retransmit buffer
+
+By default a message published while the broker is unreachable only lives in paho's memory
+(`qos` 1 or 2, resent on reconnect) or is dropped (`qos` 0). For outages that last longer than
+the process, or longer than the RAM allows, opt in to a disk spool:
+
+```python
+settings = MqttSettings(
+    spool_path="/var/lib/rdp/mqtt-spool.db",  # SQLite file, created on first use
+    spool_max_mb=2048,                         # oldest messages are dropped beyond this
+)
+```
+
+While disconnected every outgoing message (after batching and encoding) is appended to the file.
+On every connect the spool is replayed oldest first and each chunk is deleted once the broker
+acknowledged it, so the buffer survives a restart. Delivery is at-least-once: a chunk in flight
+during another connection loss is published again on the next connect. Live messages published
+during the replay go straight out, so ordering between live and replayed messages is not preserved.
+
+Sizing: one JSON message of 30 floats per second is roughly 50–85 MB a day, `json_zstd` about
+5–10× less.
 
 ## Usage Examples
 

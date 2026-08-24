@@ -1104,3 +1104,58 @@ async def test_json_zstd_e2e(complex_weather_message):
             subscriber_task.cancel()
         await writer_device.shutdown()
         await subscriber_device.shutdown()
+
+
+@pytest.mark.timeout(60)
+async def test_spool_replays_after_an_outage(tmp_path):
+    """Messages published while the writer is disconnected reach the broker after it reconnects, in order."""
+    topic = f"test/spool/{uuid.uuid4()}"
+    received = []
+
+    receiver_client = await create_connected_mqtt_client()
+    receiver_client.on_message = lambda client, userdata, msg: received.append(orjson.loads(msg.payload)["i"])
+    receiver_client.subscribe(topic, qos=1)
+
+    writer_device = MqttClient(
+        MqttSettings(
+            host=TEST_BROKER,
+            port=TEST_PORT,
+            ssl=False,
+            subscribe=False,
+            identifier=f"spool-writer-{uuid.uuid4()}",
+            spool_path=str(tmp_path / "spool.db"),
+        )
+    )
+    await writer_device.setup()
+    paho = writer_device._client
+    assert paho is not None
+
+    try:
+        # Outage: a clean disconnect ends paho's network thread and nobody reconnects
+        paho.disconnect()
+        for _ in range(50):
+            if not paho.is_connected():
+                break
+            await asyncio.sleep(0.1)
+        assert not paho.is_connected()
+
+        for i in range(3):
+            await writer_device.publish({"i": i}, topic=topic)
+        await asyncio.sleep(1)
+        assert received == []
+        assert writer_device._spool.execute("SELECT count(*) FROM spool").fetchone()[0] == 3
+
+        # Broker reachable again
+        paho.reconnect()
+        paho.loop_start()
+
+        for _ in range(100):
+            if len(received) >= 3:
+                break
+            await asyncio.sleep(0.1)
+        assert received == [0, 1, 2]
+        assert writer_device._spool.execute("SELECT count(*) FROM spool").fetchone()[0] == 0
+    finally:
+        await writer_device.shutdown()
+        receiver_client.loop_stop()
+        receiver_client.disconnect()
